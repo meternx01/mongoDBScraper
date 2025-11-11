@@ -4,7 +4,7 @@
 var express = require("express");
 var mongojs = require("mongojs");
 // Require request and cheerio. This makes the scraping possible
-var request = require("request");
+var axios = require('axios');
 var cheerio = require("cheerio");
 
 // Initialize Express
@@ -31,34 +31,34 @@ app.get("/", function (req, res) {
 // from the scrapedData collection as a json (this will be populated
 // by the data you scrape using the next route)
 app.get("/scrape", function (req, res) {
-	request("https://www.infowars.com/", function (error, response, html) {
+	// use axios instead of request
+	axios.get('https://www.infowars.com/')
+		.then(function (response) {
+			var $ = cheerio.load(response.data);
 
-		var $ = cheerio.load(html);
+			var results = [];
 
-		var results = [];
+			$("div.article-content > h3").each(function (i, element) {
+				var link = $(element).children().attr("href");
+				var title = $(element).children().text();
 
-		$("div.article-content > h3").each(function (i, element) {
-
-			var link = $(element).children().attr("href");
-			var title = $(element).children().text();
-
-			results.push({
-				title: title,
-				link: link
+				results.push({
+					title: title,
+					link: link
+				});
 			});
+
+			console.log(results.length);
+			for (var i = 0; i < results.length; i++) {
+				db.scrapedData.insert(results[i], function (err, doc) {
+					if (doc) console.log("SCRAPED", doc.title);
+				});
+			}
+		})
+		.catch(function (err) {
+			console.error('Error fetching page:', err && err.message);
 		});
 
-		console.log(results.length);
-//		var returnValue = [];
-		for (var i = 0; i < results.length; i++) {
-//			console.log("sending", results[i]);
-			db.scrapedData.insert(results[i], function (err, doc) {
-				console.log("SCRAPED", doc.title);
-			});
-		}
-		
-	});
-	
 });
 
 // Listen on port 3000
