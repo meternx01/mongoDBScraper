@@ -21,7 +21,7 @@
     "cheerio": "^1.0.0-rc.2",
     "express": "^4.16.2",
     "express-handlebars": "^5.3.1",
-    "mongojs": "^2.4.1",
+    "mongojs": "^3.1.0",
     "mongoose": "^5.7.7",
     "request": "^2.83.0"
   }
