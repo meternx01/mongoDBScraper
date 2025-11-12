@@ -28,8 +28,8 @@ mongoose.connect(MONGO_URI, { autoIndex: false, serverSelectionTimeoutMS: 10000 
 
 // Define a simple schema/model
 var ScrapedSchema = new mongoose.Schema({
-	title: { type: String, index: true },
-	link: String,
+	title: { type: String, required: true, trim: true, index: true },
+	link: { type: String, required: true, unique: true },
 	createdAt: { type: Date, default: Date.now }
 });
 // Avoid model overwrite on hot reload
@@ -55,7 +55,7 @@ app.get("/scrape", function (req, res) {
 
 			$("div.article-content > h3").each(function (i, element) {
 				var link = $(element).children().attr("href");
-				var title = $(element).children().text();
+				var title = ($(element).children().text() || "").trim();
 
 				results.push({
 					title: title,
@@ -63,11 +63,13 @@ app.get("/scrape", function (req, res) {
 				});
 			});
 
-			// drop items without a link (can't upsert without a key)
-			results = results.filter(function (r) { return !!r.link; });
+			// drop items without a valid link or title
+			results = results.filter(function (r) {
+				return r.link && /^https?:\/\//i.test(r.link) && r.title && r.title.length > 0;
+			});
 			console.log(results.length);
 			if (!results.length) {
-				return res.status(200).json({ inserted: 0, matched: 0, modified: 0, message: 'No articles matched selector' });
+				return res.status(200).json({ inserted: 0, matched: 0, modified: 0, message: 'No valid articles after validation' });
 			}
 
 			// Upsert by link to avoid duplicate key errors and support partial success cleanly
