@@ -2,23 +2,44 @@
 
 // Dependencies
 var express = require("express");
-var mongojs = require("mongojs");
-// Require request and cheerio. This makes the scraping possible
+var mongoose = require("mongoose");
+// Require axios and cheerio. This makes the scraping possible
 var axios = require('axios');
 var cheerio = require("cheerio");
 
 // Initialize Express
 var app = express();
 
-// Database configuration
-var databaseUrl = "scraper";
-var collections = ["scrapedData"];
-
-// Hook mongojs configuration to the db variable
-var db = mongojs(databaseUrl, collections);
-db.on("error", function (error) {
-	console.log("Database Error:", error);
+// Define a simple schema/model (place before connect so we can sync indexes after connect)
+var ScrapedSchema = new mongoose.Schema({
+	title: { type: String, required: true, trim: true, index: true },
+	link: { type: String, required: true, unique: true },
+	createdAt: { type: Date, default: Date.now },
+	updatedAt: { type: Date }
 });
+// Avoid model overwrite on hot reload
+var Scraped = mongoose.models.Scraped || mongoose.model('Scraped', ScrapedSchema);
+
+// Mongoose connection (fail-fast)
+var MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/scraper';
+var AUTO_INDEX = process.env.MONGOOSE_AUTO_INDEX === 'true'; // default false unless explicitly enabled
+mongoose.set('bufferCommands', false);
+mongoose.connection.on('error', function (err) { console.error('Mongoose error:', err); });
+
+mongoose.connect(MONGO_URI, { autoIndex: AUTO_INDEX, serverSelectionTimeoutMS: 10000 })
+	.then(function () {
+		// Ensure schema indexes are created when autoIndex is disabled
+		var sync = (process.env.SYNC_INDEXES === 'false') ? Promise.resolve() : Scraped.syncIndexes();
+		return sync.then(function () {
+			app.listen(3000, function () {
+				console.log("App running on port 3000!");
+			});
+		});
+	})
+	.catch(function (err) {
+		console.error('Mongoose connection/index error:', err && err.message);
+		process.exit(1);
+	});
 
 // Main route (simple Hello World Message)
 app.get("/", function (req, res) {
@@ -40,7 +61,7 @@ app.get("/scrape", function (req, res) {
 
 			$("div.article-content > h3").each(function (i, element) {
 				var link = $(element).children().attr("href");
-				var title = $(element).children().text();
+				var title = ($(element).children().text() || "").trim();
 
 				results.push({
 					title: title,
@@ -48,20 +69,48 @@ app.get("/scrape", function (req, res) {
 				});
 			});
 
+			// drop items without a valid link or title
+			results = results.filter(function (r) {
+				return r.link && /^https?:\/\//i.test(r.link) && r.title && r.title.length > 0;
+			});
 			console.log(results.length);
-			for (var i = 0; i < results.length; i++) {
-				db.scrapedData.insert(results[i], function (err, doc) {
-					if (doc) console.log("SCRAPED", doc.title);
-				});
+			if (!results.length) {
+				return res.status(200).json({ inserted: 0, matched: 0, modified: 0, message: 'No valid articles after validation' });
 			}
+
+			// Upsert by link to avoid duplicate key errors and support partial success cleanly
+			var now = new Date();
+			var ops = results.map(function (doc) {
+				return {
+					updateOne: {
+						filter: { link: doc.link },
+						update: {
+							$set: { title: doc.title },
+							$setOnInsert: { link: doc.link, createdAt: now },
+							$currentDate: { updatedAt: true }
+						},
+						upsert: true
+					}
+				};
+			});
+
+			Scraped.bulkWrite(ops, { ordered: false })
+				.then(function (bw) {
+					// Normalize counts across MongoDB driver versions
+					var upserted = typeof bw.upsertedCount === 'number' ? bw.upsertedCount
+							: (bw.result && bw.result.upserted ? bw.result.upserted.length : 0);
+					var matched = typeof bw.matchedCount === 'number' ? bw.matchedCount : (bw.result && bw.result.nMatched) || 0;
+					var modified = typeof bw.modifiedCount === 'number' ? bw.modifiedCount : (bw.result && bw.result.nModified) || 0;
+					res.status(201).json({ inserted: upserted, matched: matched, modified: modified });
+				})
+				.catch(function (err) {
+					console.error('Bulk write error:', err && err.message);
+					res.status(500).json({ error: 'Bulk write failed', details: err && err.message });
+				});
 		})
 		.catch(function (err) {
 			console.error('Error fetching page:', err && err.message);
+			res.status(502).json({ error: 'Fetch failed', details: err && err.message });
 		});
 
-});
-
-// Listen on port 3000
-app.listen(3000, function () {
-	console.log("App running on port 3000!");
 });
