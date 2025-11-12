@@ -10,23 +10,7 @@ var cheerio = require("cheerio");
 // Initialize Express
 var app = express();
 
-// Mongoose connection (fail-fast)
-var MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/scraper';
-mongoose.set('bufferCommands', false);
-mongoose.connection.on('error', function (err) { console.error('Mongoose error:', err); });
-
-mongoose.connect(MONGO_URI, { autoIndex: false, serverSelectionTimeoutMS: 10000 })
-	.then(function () {
-		app.listen(3000, function () {
-			console.log("App running on port 3000!");
-		});
-	})
-	.catch(function (err) {
-		console.error('Mongoose connection error:', err && err.message);
-		process.exit(1);
-	});
-
-// Define a simple schema/model
+// Define a simple schema/model (place before connect so we can sync indexes after connect)
 var ScrapedSchema = new mongoose.Schema({
 	title: { type: String, required: true, trim: true, index: true },
 	link: { type: String, required: true, unique: true },
@@ -35,6 +19,27 @@ var ScrapedSchema = new mongoose.Schema({
 });
 // Avoid model overwrite on hot reload
 var Scraped = mongoose.models.Scraped || mongoose.model('Scraped', ScrapedSchema);
+
+// Mongoose connection (fail-fast)
+var MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/scraper';
+var AUTO_INDEX = process.env.MONGOOSE_AUTO_INDEX === 'true'; // default false unless explicitly enabled
+mongoose.set('bufferCommands', false);
+mongoose.connection.on('error', function (err) { console.error('Mongoose error:', err); });
+
+mongoose.connect(MONGO_URI, { autoIndex: AUTO_INDEX, serverSelectionTimeoutMS: 10000 })
+	.then(function () {
+		// Ensure schema indexes are created when autoIndex is disabled
+		var sync = (process.env.SYNC_INDEXES === 'false') ? Promise.resolve() : Scraped.syncIndexes();
+		return sync.then(function () {
+			app.listen(3000, function () {
+				console.log("App running on port 3000!");
+			});
+		});
+	})
+	.catch(function (err) {
+		console.error('Mongoose connection/index error:', err && err.message);
+		process.exit(1);
+	});
 
 // Main route (simple Hello World Message)
 app.get("/", function (req, res) {
