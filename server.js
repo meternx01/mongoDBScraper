@@ -10,12 +10,21 @@ var cheerio = require("cheerio");
 // Initialize Express
 var app = express();
 
-// Mongoose connection
+// Mongoose connection (fail-fast)
 var MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/scraper';
-mongoose.connect(MONGO_URI, {autoIndex: false}).catch(function (err) {
-  console.error('Mongoose connection error:', err && err.message);
-});
+mongoose.set('bufferCommands', false);
 mongoose.connection.on('error', function (err) { console.error('Mongoose error:', err); });
+
+mongoose.connect(MONGO_URI, { autoIndex: false, serverSelectionTimeoutMS: 10000 })
+  .then(function () {
+    app.listen(3000, function () {
+      console.log("App running on port 3000!");
+    });
+  })
+  .catch(function (err) {
+    console.error('Mongoose connection error:', err && err.message);
+    process.exit(1);
+  });
 
 // Define a simple schema/model
 var ScrapedSchema = new mongoose.Schema({
@@ -54,21 +63,36 @@ app.get("/scrape", function (req, res) {
 				});
 			});
 
+      // drop items without a link (can't upsert without a key)
+      results = results.filter(function (r) { return !!r.link; });
 			console.log(results.length);
 			if (!results.length) {
-        return res.status(200).json({ inserted: 0, message: 'No articles matched selector' });
+        return res.status(200).json({ inserted: 0, matched: 0, modified: 0, message: 'No articles matched selector' });
       }
 
-      // Bulk insert (ignore duplicate titles by using unordered insertMany and filtering errors)
-      Scraped.insertMany(results, { ordered: false })
-        .then(function (docs) {
-          console.log('Inserted', docs.length, 'docs');
-          res.status(201).json({ inserted: docs.length });
+      // Upsert by link to avoid duplicate key errors and support partial success cleanly
+      var ops = results.map(function (doc) {
+        return {
+          updateOne: {
+            filter: { link: doc.link },
+            update: { $setOnInsert: doc },
+            upsert: true
+          }
+        };
+      });
+
+      Scraped.bulkWrite(ops, { ordered: false })
+        .then(function (bw) {
+          // Normalize counts across MongoDB driver versions
+          var upserted = typeof bw.upsertedCount === 'number' ? bw.upsertedCount
+                        : (bw.result && bw.result.upserted ? bw.result.upserted.length : 0);
+          var matched = typeof bw.matchedCount === 'number' ? bw.matchedCount : (bw.result && bw.result.nMatched) || 0;
+          var modified = typeof bw.modifiedCount === 'number' ? bw.modifiedCount : (bw.result && bw.result.nModified) || 0;
+          res.status(201).json({ inserted: upserted, matched: matched, modified: modified });
         })
         .catch(function (err) {
-          // Duplicate key errors ignored; respond with partial success if any
-          console.error('Insert error:', err && err.message);
-          res.status(500).json({ error: 'Insert failed', details: err && err.message });
+          console.error('Bulk write error:', err && err.message);
+          res.status(500).json({ error: 'Bulk write failed', details: err && err.message });
         });
 		})
 		.catch(function (err) {
@@ -76,9 +100,4 @@ app.get("/scrape", function (req, res) {
 			res.status(502).json({ error: 'Fetch failed', details: err && err.message });
 		});
 
-});
-
-// Listen on port 3000
-app.listen(3000, function () {
-	console.log("App running on port 3000!");
 });
