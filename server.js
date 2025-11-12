@@ -30,7 +30,8 @@ mongoose.connect(MONGO_URI, { autoIndex: false, serverSelectionTimeoutMS: 10000 
 var ScrapedSchema = new mongoose.Schema({
 	title: { type: String, required: true, trim: true, index: true },
 	link: { type: String, required: true, unique: true },
-	createdAt: { type: Date, default: Date.now }
+	createdAt: { type: Date, default: Date.now },
+	updatedAt: { type: Date }
 });
 // Avoid model overwrite on hot reload
 var Scraped = mongoose.models.Scraped || mongoose.model('Scraped', ScrapedSchema);
@@ -73,11 +74,16 @@ app.get("/scrape", function (req, res) {
 			}
 
 			// Upsert by link to avoid duplicate key errors and support partial success cleanly
+			var now = new Date();
 			var ops = results.map(function (doc) {
 				return {
 					updateOne: {
 						filter: { link: doc.link },
-						update: { $setOnInsert: doc },
+						update: {
+							$set: { title: doc.title },
+							$setOnInsert: { link: doc.link, createdAt: now },
+							$currentDate: { updatedAt: true }
+						},
 						upsert: true
 					}
 				};
