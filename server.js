@@ -2,23 +2,29 @@
 
 // Dependencies
 var express = require("express");
-var mongojs = require("mongojs");
-// Require request and cheerio. This makes the scraping possible
+var mongoose = require("mongoose");
+// Require axios and cheerio. This makes the scraping possible
 var axios = require('axios');
 var cheerio = require("cheerio");
 
 // Initialize Express
 var app = express();
 
-// Database configuration
-var databaseUrl = "scraper";
-var collections = ["scrapedData"];
-
-// Hook mongojs configuration to the db variable
-var db = mongojs(databaseUrl, collections);
-db.on("error", function (error) {
-	console.log("Database Error:", error);
+// Mongoose connection
+var MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/scraper';
+mongoose.connect(MONGO_URI, {autoIndex: false}).catch(function (err) {
+  console.error('Mongoose connection error:', err && err.message);
 });
+mongoose.connection.on('error', function (err) { console.error('Mongoose error:', err); });
+
+// Define a simple schema/model
+var ScrapedSchema = new mongoose.Schema({
+  title: { type: String, index: true },
+  link: String,
+  createdAt: { type: Date, default: Date.now }
+});
+// Avoid model overwrite on hot reload
+var Scraped = mongoose.models.Scraped || mongoose.model('Scraped', ScrapedSchema);
 
 // Main route (simple Hello World Message)
 app.get("/", function (req, res) {
@@ -49,14 +55,25 @@ app.get("/scrape", function (req, res) {
 			});
 
 			console.log(results.length);
-			for (var i = 0; i < results.length; i++) {
-				db.scrapedData.insert(results[i], function (err, doc) {
-					if (doc) console.log("SCRAPED", doc.title);
-				});
-			}
+			if (!results.length) {
+        return res.status(200).json({ inserted: 0, message: 'No articles matched selector' });
+      }
+
+      // Bulk insert (ignore duplicate titles by using unordered insertMany and filtering errors)
+      Scraped.insertMany(results, { ordered: false })
+        .then(function (docs) {
+          console.log('Inserted', docs.length, 'docs');
+          res.status(201).json({ inserted: docs.length });
+        })
+        .catch(function (err) {
+          // Duplicate key errors ignored; respond with partial success if any
+          console.error('Insert error:', err && err.message);
+          res.status(500).json({ error: 'Insert failed', details: err && err.message });
+        });
 		})
 		.catch(function (err) {
 			console.error('Error fetching page:', err && err.message);
+			res.status(502).json({ error: 'Fetch failed', details: err && err.message });
 		});
 
 });
